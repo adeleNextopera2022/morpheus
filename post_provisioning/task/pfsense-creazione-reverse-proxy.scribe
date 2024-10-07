@@ -1,0 +1,22 @@
+resource "task" "pfsense-creazione-reverse-proxy" {
+  code = "pfsense-creazione-reverse-proxy"
+  name = "PFSENSE - Creazione reverse proxy"
+  uuid = "a4b245cb-9c2e-439a-a77f-51ac627aa412"
+  continueOnError = true
+  dateCreated = "2024-09-23T13:32:45.000Z"
+  executeTarget = "local"
+  labels = [ "a_angiulo", "pfesense", "reverse proxy" ]
+  lastUpdated = "2024-10-04T10:22:03.000Z"
+  options = [
+    {
+      optionType = { code = "pythonAdditionalPackages" }
+      value = "mysql-connector-python morpheus-cypher"
+    },
+    {
+      content = { uuid = "034a774d-9fea-490c-a5ab-67aaa59d2d00" }
+      optionType = { code = "pythonScript" }
+    }
+  ]
+  resultType = "json"
+  taskType = { code = "jythonTask" }
+}

@@ -1,0 +1,196 @@
+resource "file-content" "034a774d-9fea-490c-a5ab-67aaa59d2d00" {
+  uuid = "034a774d-9fea-490c-a5ab-67aaa59d2d00"
+  content = <<EOFSCRIBE
+import json
+import requests
+import sys
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from morpheuscypher import Cypher
+
+# Funzione per inviare l'email in caso di errore o successo
+def invia_email(subject, body, recipient):
+    smtp_server = "sandbox.smtp.mailtrap.io"
+    smtp_port = 587
+    smtp_user = "31384e4baf21ce"
+    smtp_password = "2e8c46b3f80509"
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())
+    except smtplib.SMTPException as email_error:
+        raise Exception(f"Errore durante l'invio dell'email: {email_error}")
+    except Exception as e:
+        raise Exception(f"Errore sconosciuto durante l'invio dell'email: {e}")
+
+# Funzione per gestire le chiamate API POST
+def api_call(url, headers, data):
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data), verify=False)
+
+        if response.status_code != 200:
+            raise requests.RequestException(f"Errore API: {response.status_code} - {response.text}")
+
+        return response.json()
+    
+    except requests.RequestException as re:
+        raise requests.RequestException(f"Errore durante la chiamata API: {re}")
+    except json.JSONDecodeError as je:
+        raise Exception(f"Errore nella decodifica della risposta API: {je}")
+
+# Variabile per tenere traccia dello stato del task
+exit_code = 0  # Impostato su 0 per il successo
+result = {"status": "success", "message": "", "data": {}}
+
+try:
+    # Verifica se 'ovh-creazione-record-a-refresh-zone' esiste ed è success
+    if 'ovh-creazione-record-a-refresh-zone' not in morpheus['results'] or morpheus['results']['ovh-creazione-record-a-refresh-zone'] is None:
+        raise KeyError("Il task di OVH creazione record e refresh zona non è stato eseguito.")
+
+    ovh_result = morpheus['results']['ovh-creazione-record-a-refresh-zone']
+    if 'status' not in ovh_result or ovh_result['status'] != 'success':  # CORRETTO: Usa "or" al posto di "o"
+        raise ValueError("Il task di OVH creazione record e refresh zona non è stato completato con successo.")
+
+    # Recupera i parametri dal risultato
+    dns_result = ovh_result.get('dns_result', {})
+    ovh_record_a_subDomain = dns_result.get('subDomain')
+    ovh_record_a_zone = dns_result.get('zone')
+
+    if not ovh_record_a_subDomain or not ovh_record_a_zone:
+        raise ValueError("ovh_record_a_subDomain o ovh_record_a_zone non validi.")
+
+    record_a = f"{ovh_record_a_subDomain}.{ovh_record_a_zone}"
+
+    # Recupera l'indirizzo IP interno della VM e altri dettagli
+    ip = morpheus['instance']['container'].get('internalIp')
+    vm_name = morpheus['instance'].get('name')
+    vm_id = morpheus['instance'].get('id')
+
+    if not ip or not vm_name or not vm_id:
+        raise ValueError("IP, vm_name o vm_id non validi.")
+
+    # Recupera i valori segreti per l'autenticazione dall'archivio di Morpheus
+    pfsense_api_url = Cypher(morpheus=morpheus).get('secret/PFSENSE-API-URL')
+    api_key = Cypher(morpheus=morpheus).get('secret/PFSENSE-DEV-API-KEY')
+
+    if not pfsense_api_url or not api_key:
+        raise ValueError("pfsense_api_url o api_key non validi.")
+
+    headers = {
+        'X-API-Key': api_key,
+        'Content-Type': 'application/json'
+    }
+
+    # Creazione backend
+    url_backend = f"{pfsense_api_url}/api/v2/services/haproxy/backend"
+    backend_data = {
+        "name": f"Backend-{vm_name}",
+        "servers": [
+            {
+                "name": vm_name,
+                "status": "active",
+                "address": ip,
+                "port": "80",
+                "ssl": False,
+                "sslserververify": False
+            }
+        ],
+        "httpcheck_method": "OPTIONS",
+        "transparent_interface": "lan",
+        "connection_timeout": 500000,
+        "server_timeout": 500000,
+        "check_type": "none",
+        "log_health_checks": True
+    }
+
+    backend_response = api_call(url_backend, headers, backend_data)
+    pfsense_be_id = backend_response['data']['id']
+    result["message"] += "Creazione Backend completata. "
+    result["data"]["pfsense_be_id"] = pfsense_be_id  # Salva l'ID del backend
+
+    # Creazione ACL HTTPS
+    url_acl_https = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/acl"
+    acl_data_https = {
+        "parent_id": 0,
+        "name": f"{vm_name}SNI",
+        "expression": "host_matches",
+        "value": record_a,
+        "casesensitive": False,
+        "not": False
+    }
+
+    acl_response = api_call(url_acl_https, headers, acl_data_https)
+    pfsense_fe_0_acl_id = acl_response['data']['id']
+    result["message"] += "Creazione ACL HTTPS completata. "
+    result["data"]["pfsense_fe_0_acl_id"] = pfsense_fe_0_acl_id  # Salva l'ID dell'ACL HTTPS
+
+    # Creazione Azione HTTPS
+    url_action_https = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/action"
+    action_data_https = {
+        "parent_id": 0,
+        "action": "use_backend",
+        "acl": f"{vm_name}SNI",
+        "backend": f"Backend-{vm_name}"
+    }
+
+    action_response = api_call(url_action_https, headers, action_data_https)
+    pfsense_fe_0_action_id = action_response['data']['id']
+    result["message"] += "Creazione Azione HTTPS completata. "
+    result["data"]["pfsense_fe_0_action_id"] = pfsense_fe_0_action_id  # Salva l'ID dell'Azione HTTPS
+
+    # Creazione ACL HTTP
+    url_acl_http = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/acl"
+    acl_data_http = {
+        "parent_id": 1,
+        "name": "httpRedirectACL",
+        "expression": "host_matches",
+        "value": record_a,
+        "casesensitive": False,
+        "not": False
+    }
+
+    acl_response_http = api_call(url_acl_http, headers, acl_data_http)
+    pfsense_fe_1_acl_id = acl_response_http['data']['id']
+    result["message"] += "Creazione ACL HTTP completata. "
+    result["data"]["pfsense_fe_1_acl_id"] = pfsense_fe_1_acl_id  # Salva l'ID dell'ACL HTTP
+
+    # Applicazione delle modifiche
+    url_apply = f"{pfsense_api_url}/api/v2/services/haproxy/apply"
+    apply_response = api_call(url_apply, headers, {})
+    result["message"] += "Applicazione delle modifiche HAProxy completata. "
+
+except (ValueError, KeyError, requests.RequestException) as e:
+    exit_code = 1
+    result["status"] = "failed"
+    result["message"] = f"Errore: {str(e)}"
+    invia_email("Errore Task", result["message"], morpheus['user']['email'])
+
+except Exception as e:
+    exit_code = 1
+    result["status"] = "failed"
+    result["message"] = f"Errore generico: {str(e)}"
+    invia_email("Errore Generico", result["message"], morpheus['user']['email'])
+
+finally:
+    # Imposta il risultato finale in formato JSON
+    final_output = json.dumps(result)
+
+    # Stampa il risultato in formato JSON
+    print(final_output, flush=True)
+
+    # Imposta il codice di uscita per far fallire o riuscire il task
+    sys.exit(exit_code)
+
+EOFSCRIBE
+  dateCreated = "2024-09-23T13:32:45.000Z"
+  lastUpdated = "2024-10-04T10:11:57.000Z"
+}
