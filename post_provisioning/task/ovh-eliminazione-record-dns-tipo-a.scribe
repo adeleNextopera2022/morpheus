@@ -1,0 +1,26 @@
+resource "task" "ovh-eliminazione-record-dns-tipo-a" {
+  code = "ovh-eliminazione-record-dns-tipo-a"
+  name = "OVH - Eliminazione record DNS tipo A"
+  uuid = "6fc0b918-78c4-4249-b648-1def806376bb"
+  continueOnError = true
+  dateCreated = "2024-10-04T11:30:30.000Z"
+  executeTarget = "local"
+  labels = [ "a_angiulo", "eliminazione record A" ]
+  lastUpdated = "2024-10-04T11:55:48.000Z"
+  options = [
+    {
+      optionType = { code = "pythonArgs" }
+      value = "gesti.co 2.114.227.249"
+    },
+    {
+      optionType = { code = "pythonAdditionalPackages" }
+      value = "ovh morpheus-cypher mysql-connector-python"
+    },
+    {
+      content = { uuid = "afde2c2a-bbfc-4ba2-aa35-f4de5ab0864b" }
+      optionType = { code = "pythonScript" }
+    }
+  ]
+  resultType = "json"
+  taskType = { code = "jythonTask" }
+}

@@ -1,0 +1,176 @@
+resource "file-content" "afde2c2a-bbfc-4ba2-aa35-f4de5ab0864b" {
+  uuid = "afde2c2a-bbfc-4ba2-aa35-f4de5ab0864b"
+  content = <<EOFSCRIBE
+import json
+import sys
+import ovh
+import re
+import mysql.connector
+from morpheuscypher import Cypher
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import logging
+
+# Configura il logging
+logging.basicConfig(filename='task_log.log', level=logging.ERROR)
+
+# Funzione per stampare i risultati in formato JSON con "status" e "message" in testa
+def print_result(status, message, extra_data=None):
+    result = {
+        "status": status,
+        "message": message
+    }
+    if extra_data:
+        result.update(extra_data)  # Aggiungi ulteriori dati dopo "status" e "message"
+    final_output = json.dumps(result)
+    print(final_output, flush=True)
+
+# Funzione per inviare l'email
+def invia_email(subject, body, recipient):
+    smtp_server = "sandbox.smtp.mailtrap.io"
+    smtp_port = 587
+    smtp_user = "31384e4baf21ce"
+    smtp_password = "2e8c46b3f80509"
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = recipient
+    msg['Subject'] = subject
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  # Avvia TLS
+            server.login(smtp_user, smtp_password)  # Login con le credenziali
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())  # Invia l'email
+        print(f"Email inviata con successo a {recipient}")
+    except smtplib.SMTPException as email_error:
+        print(f"Errore durante l'invio dell'email: {email_error}", flush=True)
+        logging.error(f"Errore SMTP: {email_error}")
+    except Exception as e:
+        print(f"Errore sconosciuto durante l'invio dell'email: {e}", flush=True)
+        logging.error(f"Errore generico invio email: {e}")
+
+# Variabile per tenere traccia dello stato del task
+exit_code = 0  # Impostato su 0 per il successo
+try:
+    if len(sys.argv) != 3:
+        raise ValueError("Numero di argomenti non valido. Sono richiesti esattamente 2 argomenti.")
+
+    # Prendi i valori segreti per l'autenticazione con l'API di OVH
+    application_key = Cypher(morpheus=morpheus).get('secret/OVH-APPLICATION-KEY')
+    application_secret = Cypher(morpheus=morpheus).get('secret/OVH-APPLICATION-SECRET')
+    consumer_key = Cypher(morpheus=morpheus).get('secret/OVH-CONSUMER-KEY')
+
+    # Ottieni i valori dagli argomenti
+    zone_name = sys.argv[1]
+    target_ip = sys.argv[2]
+    vm_id = morpheus['instance']['id']
+
+    if not vm_id or not zone_name or not target_ip:
+        raise ValueError("vm_id, zone_name o target_ip non possono essere vuoti.")
+
+    def is_valid_ip(ip):
+        pattern = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+        return pattern.match(ip)
+
+    if not is_valid_ip(target_ip):
+        raise ValueError("L'indirizzo IP fornito non è valido.")
+
+    # Gestione della connessione al database
+    try:
+        db_pw = Cypher(morpheus=morpheus).get('secret/DB-MORPHEUS-PW-USER-ROOT')
+        connection = mysql.connector.connect(
+            host="localhost",
+            port="3306",
+            database="xaas_ts",
+            user="root",
+            password=db_pw,
+            auth_plugin='mysql_native_password'
+        )
+        cursor = connection.cursor()
+        query = "SELECT ovh_record_a_id FROM xaas_instances WHERE id_morpheus = %s"
+        cursor.execute(query, (vm_id,))
+        results = cursor.fetchone()
+
+        if results:
+            ovh_record_a_id = results[0]  # Salva il valore nella variabile
+            if ovh_record_a_id:
+                extra_data = {
+                    "ovh_record_a_id": ovh_record_a_id,
+                    "vm_id": vm_id
+                }
+
+                # Configurazione del client OVH
+                client = ovh.Client(
+                    endpoint='ovh-eu',
+                    application_key=application_key,
+                    application_secret=application_secret,
+                    consumer_key=consumer_key,
+                )
+
+                def delete_dns_record(ovh_record_a_id):
+                    try:
+                        result = client.delete(f"/domain/zone/{zone_name}/record/{ovh_record_a_id}")
+                        return result
+                    except ovh.exceptions.ResourceNotFoundError:
+                        raise ValueError("Il record DNS non esiste.")
+                    except ovh.exceptions.APIError as api_error:
+                        raise ValueError(f"Errore API OVH: {str(api_error)}")
+
+                def refresh_zone(zone_name):
+                    try:
+                        client.post(f"/domain/zone/{zone_name}/refresh")
+                    except ovh.exceptions.ResourceNotFoundError:
+                        raise ValueError("La zona DNS non esiste.")
+                    except ovh.exceptions.APIError as api_error:
+                        raise ValueError(f"Errore API OVH durante il refresh: {str(api_error)}")
+
+                dns_result = delete_dns_record(ovh_record_a_id)
+                refresh_zone(zone_name)
+                extra_data["dns_result"] = dns_result
+
+                print_result("success", "Record DNS eliminato e zona DNS aggiornata con successo.", extra_data)
+            else:
+                raise ValueError("Il valore di 'ovh_record_a_id' è nullo o vuoto.")
+        else:
+            raise ValueError("Nessun record trovato con l'id_morpheus fornito.")
+
+    except mysql.connector.Error as err:
+        raise ValueError(f"Errore MySQL: {err}")
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+except ValueError as ve:
+    exit_code = 1
+    error_message = str(ve)
+    print_result("failed", error_message)
+    invia_email("Errore Task OVH", error_message, morpheus['user']['email'])
+    logging.error(f"Errore di valore: {ve}")
+
+except ovh.exceptions.APIError as api_err:
+    exit_code = 1
+    error_message = f"Errore API OVH: {str(api_err)}"
+    print_result("failed", error_message)
+    invia_email("Errore API OVH", error_message, morpheus['user']['email'])
+    logging.error(f"Errore API OVH: {api_err}")
+
+except Exception as e:
+    exit_code = 1
+    error_message = f"Errore durante l'esecuzione: {str(e)}"
+    print_result("failed", error_message)
+    subject = f"Errore Generico Task OVH eliminazione record DNS tipo A {morpheus['instance']['name']}"
+    invia_email(subject, error_message, morpheus['user']['email'])
+    logging.error(f"Errore generico: {e}")
+
+sys.exit(exit_code)
+
+EOFSCRIBE
+  dateCreated = "2024-10-04T11:30:30.000Z"
+  lastUpdated = "2024-10-04T11:44:30.000Z"
+}
