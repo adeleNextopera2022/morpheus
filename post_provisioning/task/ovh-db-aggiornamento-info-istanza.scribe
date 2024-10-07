@@ -1,0 +1,22 @@
+resource "task" "ovh-db-aggiornamento-info-istanza" {
+  code = "ovh-db-aggiornamento-info-istanza"
+  name = "OVH - DB aggiornamento info istanza"
+  uuid = "5e07ba64-8f29-4593-95ba-94ad62257082"
+  continueOnError = true
+  dateCreated = "2024-09-23T13:42:10.000Z"
+  executeTarget = "local"
+  labels = [ "a_angiulo", "aggiornamento info", "db", "ovh" ]
+  lastUpdated = "2024-10-02T13:22:11.000Z"
+  options = [
+    {
+      optionType = { code = "pythonAdditionalPackages" }
+      value = "mysql-connector-python morpheus-cypher"
+    },
+    {
+      content = { uuid = "90e3449d-3931-46e2-9cda-1dac5eee0db4" }
+      optionType = { code = "pythonScript" }
+    }
+  ]
+  resultType = "json"
+  taskType = { code = "jythonTask" }
+}

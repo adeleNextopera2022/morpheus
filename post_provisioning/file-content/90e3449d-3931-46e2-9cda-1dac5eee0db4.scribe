@@ -1,0 +1,170 @@
+resource "file-content" "90e3449d-3931-46e2-9cda-1dac5eee0db4" {
+  uuid = "90e3449d-3931-46e2-9cda-1dac5eee0db4"
+  content = <<EOFSCRIBE
+import json
+import sys
+import mysql.connector
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from morpheuscypher import Cypher
+
+# Funzione per inviare un'email in caso di errore
+def invia_email(subject, body, recipient):
+    smtp_server = "sandbox.smtp.mailtrap.io"
+    smtp_port = 587
+    smtp_user = "31384e4baf21ce"
+    smtp_password = "2e8c46b3f80509"
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())
+        print(f"Email inviata con successo a {recipient}")
+    except smtplib.SMTPException as email_error:
+        print(f"Errore durante l'invio dell'email: {email_error}", flush=True)
+
+# Funzione per stampare i risultati in formato JSON
+def print_result(status, message, data=None):
+    result = {
+        "status": status,
+        "message": message
+    }
+    if data:
+        result["data"] = data
+    print(json.dumps(result))
+
+# Variabile per tenere traccia dello stato del task
+exit_code = 0  # Impostato su 0 per il successo
+
+try:
+    # Verifica se 'morpheus['results']' esiste e contiene il task 'ovh-creazione-record-a-refresh-zone'
+    if 'results' not in morpheus or not morpheus['results']:
+        raise KeyError("'morpheus.results' non esiste o è nullo.")
+    
+    if 'ovh-creazione-record-a-refresh-zone' not in morpheus['results'] or morpheus['results']['ovh-creazione-record-a-refresh-zone'] is None:
+        raise KeyError("'ovh-creazione-record-a-refresh-zone' non è presente nei risultati o è nullo.")
+    
+    # Recupera il risultato del task
+    ovh_result = morpheus['results']['ovh-creazione-record-a-refresh-zone']
+
+    # Verifica se il task precedente è stato completato con successo
+    if 'status' not in ovh_result or ovh_result['status'] != 'success':
+        message = ovh_result.get('message', 'Messaggio non disponibile')
+        raise ValueError(f"'ovh-creazione-record-a-refresh-zone' fallito. Messaggio: {message}")
+    
+    # Se il task ha avuto successo, accedi ai campi
+    vm_name = ovh_result.get('vm_name', 'Non disponibile')
+    zone_name = ovh_result.get('zone_name', 'Non disponibile')
+
+    # Recupera il risultato DNS (id, subDomain, etc.)
+    dns_result = ovh_result.get('dns_result', {})
+    ovh_record_a_id = dns_result.get('id', None)
+
+    # Verifica se il record 'id' esiste
+    if not ovh_record_a_id:
+        raise ValueError("'id' nel risultato DNS non disponibile.")
+
+    # Genera l'URL concatenando subdomain e zone
+    ovh_record_a_url = f"{vm_name}.{zone_name}"
+
+    # Recupera altri parametri necessari
+    vm_id = morpheus['instance'].get('id', None)
+
+    # Verifica che i parametri esistano
+    if not vm_id or not vm_name or not zone_name:
+        raise ValueError("Uno o più valori richiesti (vm_id, vm_name, zone_name) non sono validi.")
+
+    # Connessione al database e aggiornamento
+    try:
+        db_pw = Cypher(morpheus=morpheus).get('secret/DB-MORPHEUS-PW-USER-ROOT')
+
+        # Connessione al database
+        connection = mysql.connector.connect(
+            host="localhost",
+            port="3306",
+            database="xaas_ts",
+            user="root",
+            password=db_pw,
+            auth_plugin='mysql_native_password'
+        )
+
+        cursor = connection.cursor()
+
+        # Esegui una query per verificare se esiste la riga con l'id di Morpheus
+        query = "SELECT * FROM xaas_instances WHERE id_morpheus = %s"
+        cursor.execute(query, (vm_id,))
+        results = cursor.fetchall()
+
+        if results:
+            columns = [column[0] for column in cursor.description]
+
+            # Aggiorna la colonna 'ovh_record_a_id' se esiste
+            if 'ovh_record_a_id' in columns:
+                update_query_id = "UPDATE xaas_instances SET ovh_record_a_id = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_id, (ovh_record_a_id, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'ovh_record_a_id' aggiornato con successo.")
+
+            # Aggiorna la colonna 'ovh_record_a_url' se esiste
+            if 'ovh_record_a_url' in columns:
+                update_query_url = "UPDATE xaas_instances SET ovh_record_a_url = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_url, (ovh_record_a_url, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'ovh_record_a_url' aggiornato con successo.")
+            else:
+                print_result("error", "La colonna 'ovh_record_a_url' non esiste nella tabella.")
+        else:
+            # Creazione di un nuovo record
+            insert_query = """
+            INSERT INTO xaas_instances (id_morpheus, host_name, ovh_record_a_id, ovh_record_a_url)
+            VALUES (%s, %s, %s, %s)
+            """
+            cursor.execute(insert_query, (vm_id, vm_name, ovh_record_a_id, ovh_record_a_url))
+            connection.commit()
+            print_result("success", "Nuovo record creato con successo.")
+
+    except mysql.connector.Error as err:
+        raise
+
+    finally:
+        # Chiudi il cursore e la connessione
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+except ValueError as ve:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", str(ve))
+    invia_email("Errore Task", str(ve), morpheus['user']['email'])
+
+except KeyError as ke:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore chiave non trovata: {ke}")
+    invia_email("Errore Chiave", f"Errore chiave non trovata: {ke}", morpheus['user']['email'])
+
+except mysql.connector.Error as db_err:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore MySQL: {db_err}")
+    invia_email("Errore MySQL", f"Errore MySQL: {db_err}", morpheus['user']['email'])
+
+except Exception as e:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore generico: {str(e)}")
+    invia_email("Errore Generico", str(e), morpheus['user']['email'])
+
+# Imposta il codice di uscita per far fallire o riuscire il task
+sys.exit(exit_code)
+
+EOFSCRIBE
+  dateCreated = "2024-09-23T13:42:10.000Z"
+  lastUpdated = "2024-10-02T10:54:56.000Z"
+}
