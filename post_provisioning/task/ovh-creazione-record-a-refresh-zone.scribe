@@ -1,0 +1,26 @@
+resource "task" "ovh-creazione-record-a-refresh-zone" {
+  code = "ovh-creazione-record-a-refresh-zone"
+  name = "OVH - Creazione record DNS  di tipo A e refresh zone"
+  uuid = "89d074f0-fd3f-4507-888c-5d9278369d33"
+  continueOnError = true
+  dateCreated = "2024-09-20T09:47:39.000Z"
+  executeTarget = "local"
+  labels = [ "a_angiulo", "creazione record A", "ovh", "refresh zone" ]
+  lastUpdated = "2024-10-04T10:21:38.000Z"
+  options = [
+    {
+      optionType = { code = "pythonAdditionalPackages" }
+      value = "ovh morpheus-cypher"
+    },
+    {
+      optionType = { code = "pythonArgs" }
+      value = "gesti.co 2.114.227.249"
+    },
+    {
+      content = { uuid = "f2fdea62-136f-49eb-9b2f-51c2daf223c7" }
+      optionType = { code = "pythonScript" }
+    }
+  ]
+  resultType = "json"
+  taskType = { code = "jythonTask" }
+}
