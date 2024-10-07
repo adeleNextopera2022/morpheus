@@ -1,0 +1,21 @@
+resource "task" "pfsense-eliminazione-reverse-proxy" {
+  code = "pfsense-eliminazione-reverse-proxy"
+  name = "PFSENSE- Eliminazione reverse proxy"
+  uuid = "e163022e-c3ef-4373-8ef2-37c92d5ff193"
+  continueOnError = true
+  dateCreated = "2024-10-04T11:33:39.000Z"
+  executeTarget = "local"
+  labels = [ "a_angiulo", "frontend", "pfsense" ]
+  lastUpdated = "2024-10-04T11:56:05.000Z"
+  options = [
+    {
+      optionType = { code = "pythonAdditionalPackages" }
+      value = "mysql-connector-python morpheus-cypher"
+    },
+    {
+      content = { uuid = "9f97bbfa-054b-4e8c-8823-9eac11a4bc41" }
+      optionType = { code = "pythonScript" }
+    }
+  ]
+  taskType = { code = "jythonTask" }
+}

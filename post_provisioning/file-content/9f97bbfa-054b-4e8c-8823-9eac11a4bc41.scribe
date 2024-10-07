@@ -1,0 +1,232 @@
+resource "file-content" "9f97bbfa-054b-4e8c-8823-9eac11a4bc41" {
+  uuid = "9f97bbfa-054b-4e8c-8823-9eac11a4bc41"
+  content = <<EOFSCRIBE
+import json
+import requests
+import sys
+import smtplib
+import mysql.connector
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from morpheuscypher import Cypher
+
+# Funzione per inviare l'email in caso di errore
+def invia_email(subject, body, recipient):
+    smtp_server = "sandbox.smtp.mailtrap.io"
+    smtp_port = 587
+    smtp_user = "31384e4baf21ce"
+    smtp_password = "2e8c46b3f80509"
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())
+        print(f"Email inviata con successo a {recipient}")
+    except smtplib.SMTPException as email_error:
+        print(f"Errore durante l'invio dell'email: {email_error}", flush=True)
+    except Exception as e:
+        print(f"Errore sconosciuto durante l'invio dell'email: {e}", flush=True)
+
+# Funzione per stampare il body della risposta di ogni chiamata API
+def print_api_response(response, description):
+    print(f"{description}: {response.status_code}")
+    content_type = response.headers.get('Content-Type', '')
+
+    if 'application/json' in content_type:
+        try:
+            print("Body della risposta (JSON):")
+            print(json.dumps(response.json(), indent=4))
+        except json.JSONDecodeError:
+            print("Errore nella decodifica del JSON.")
+            print("Body testuale:")
+            print(response.text)
+    else:
+        print("Body della risposta (testo):")
+        print(response.text)
+
+# Variabile per tenere traccia dello stato del task
+exit_code = 0
+
+try:
+    # Verifica se 'ovh-eliminazione-record-dns-tipo-a' esiste ed è success
+    if 'ovh-eliminazione-record-dns-tipo-a' not in morpheus['results'] or morpheus['results']['ovh-eliminazione-record-dns-tipo-a'] is None:
+        raise KeyError("Il task 'ovh-eliminazione-record-dns-tipo-a' non è presente nei risultati o è nullo.")
+
+    ovh_result = morpheus['results']['ovh-eliminazione-record-dns-tipo-a']
+    if 'status' not in ovh_result or ovh_result['status'] != 'success':
+        raise ValueError("Il task 'ovh-eliminazione-record-dns-tipo-a' non è stato completato con successo.")
+
+    # Recupera l'ID della VM
+    vm_id = morpheus['instance']['id']
+
+    # Gestione della connessione al database
+    try:
+        db_pw = Cypher(morpheus=morpheus).get('secret/DB-MORPHEUS-PW-USER-ROOT')
+        connection = mysql.connector.connect(
+            host="localhost",
+            port="3306",
+            database="xaas_ts",
+            user="root",
+            password=db_pw,
+            auth_plugin='mysql_native_password'
+        )
+        cursor = connection.cursor()
+        query = """SELECT pfsense_be_id, pfsense_fe_0_acl_id, pfsense_fe_0_action_id, pfsense_fe_1_acl_id
+                   FROM xaas_instances WHERE id_morpheus = %s"""
+        cursor.execute(query, (vm_id,))
+        results = cursor.fetchone()
+
+        if not results:
+            raise ValueError(f"Nessun risultato trovato per id_morpheus: {vm_id}")
+
+        # Assegna le variabili dai risultati
+        pfsense_be_id = results[0]
+        pfsense_fe_0_acl_id = results[1]
+        pfsense_fe_0_action_id = results[2]
+        pfsense_fe_1_acl_id = results[3]
+
+        print(f"Backend ID: {pfsense_be_id}")
+        print(f"ACL Frontend 0 ID: {pfsense_fe_0_acl_id}")
+        print(f"Azione Frontend 0 ID: {pfsense_fe_0_action_id}")
+        print(f"ACL Frontend 1 ID: {pfsense_fe_1_acl_id}")
+
+    except mysql.connector.Error as db_err:
+        raise ValueError(f"Errore MySQL: {db_err}")
+
+    finally:
+        # Chiude il cursore e la connessione
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+    # Recupera i valori segreti per l'autenticazione dall'archivio di Morpheus
+    pfsense_api_url = Cypher(morpheus=morpheus).get('secret/PFSENSE-API-URL')
+    api_key = Cypher(morpheus=morpheus).get('secret/PFSENSE-DEV-API-KEY')
+
+    headers = {
+        'X-API-Key': api_key
+    }
+
+    # Elimina Backend
+    try:
+        url_be_delete = f"{pfsense_api_url}/api/v2/services/haproxy/backend?id={pfsense_be_id}"
+        response_be_delete = requests.delete(url_be_delete, headers=headers, verify=False)
+        print_api_response(response_be_delete, "Eliminazione Backend")
+        if response_be_delete.status_code != 200:
+            raise requests.RequestException(f"Errore nell'eliminazione del backend: {response_be_delete.status_code} - {response_be_delete.text}")
+    except Exception as e:
+        print(f"Errore eliminazione Backend: {e}")
+        invia_email("Errore Backend", str(e), morpheus['user']['email'])
+        exit_code = 1
+
+    # Elimina ACL frontend 0
+    try:
+        url_acl_fe0_delete = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/acl?parent_id=0&id={pfsense_fe_0_acl_id}"
+        response_acl_fe0_delete = requests.delete(url_acl_fe0_delete, headers=headers, verify=False)
+        print_api_response(response_acl_fe0_delete, "Eliminazione ACL Frontend 0")
+        if response_acl_fe0_delete.status_code != 200:
+            raise requests.RequestException(f"Errore nell'eliminazione dell'ACL frontend 0: {response_acl_fe0_delete.status_code} - {response_acl_fe0_delete.text}")
+    except Exception as e:
+        print(f"Errore eliminazione ACL Frontend 0: {e}")
+        invia_email("Errore ACL Frontend 0", str(e), morpheus['user']['email'])
+        exit_code = 1
+
+    # Elimina Azione frontend 0
+    try:
+        url_action_fe0_delete = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/action?parent_id=0&id={pfsense_fe_0_action_id}"
+        response_action_fe0_delete = requests.delete(url_action_fe0_delete, headers=headers, verify=False)
+        print_api_response(response_action_fe0_delete, "Eliminazione Azione Frontend 0")
+        if response_action_fe0_delete.status_code != 200:
+            raise requests.RequestException(f"Errore nell'eliminazione dell'azione frontend 0: {response_action_fe0_delete.status_code} - {response_action_fe0_delete.text}")
+    except Exception as e:
+        print(f"Errore eliminazione Azione Frontend 0: {e}")
+        invia_email("Errore Azione Frontend 0", str(e), morpheus['user']['email'])
+        exit_code = 1
+
+    # Elimina ACL frontend 1
+    try:
+        url_acl_fe1_delete = f"{pfsense_api_url}/api/v2/services/haproxy/frontend/acl?parent_id=1&id={pfsense_fe_1_acl_id}"
+        response_acl_fe1_delete = requests.delete(url_acl_fe1_delete, headers=headers, verify=False)
+        print_api_response(response_acl_fe1_delete, "Eliminazione ACL Frontend 1")
+        if response_acl_fe1_delete.status_code != 200:
+            raise requests.RequestException(f"Errore nell'eliminazione dell'ACL frontend 1: {response_acl_fe1_delete.status_code} - {response_acl_fe1_delete.text}")
+    except Exception as e:
+        print(f"Errore eliminazione ACL Frontend 1: {e}")
+        invia_email("Errore ACL Frontend 1", str(e), morpheus['user']['email'])
+        exit_code = 1
+
+    # Chiamata per applicare le modifiche
+    try:
+        url_apply = f"{pfsense_api_url}/api/v2/services/haproxy/apply"
+        response_apply = requests.post(url_apply, headers=headers, verify=False)
+        print_api_response(response_apply, "Applica modifiche HAProxy")
+        if response_apply.status_code != 200:
+            raise requests.RequestException(f"Errore nell'applicazione delle modifiche: {response_apply.status_code} - {response_apply.text}")
+    except Exception as e:
+        print(f"Errore applicazione modifiche HAProxy: {e}")
+        invia_email("Errore Applicazione Modifiche", str(e), morpheus['user']['email'])
+        exit_code = 1
+
+    # Se tutto è andato bene
+    result = {
+        "status": "success",
+        "message": "Backend, ACL, azioni eliminate e modifiche applicate correttamente."
+    }
+
+except ValueError as ve:
+    exit_code = 1
+    error_message = str(ve)
+    result = {
+        "status": "failed",
+        "message": error_message,
+    }
+    invia_email("Errore Task", error_message, morpheus['user']['email'])
+
+except KeyError as ke:
+    exit_code = 1
+    error_message = f"Errore chiave non trovata: {str(ke)}"
+    result = {
+        "status": "failed",
+        "message": error_message,
+    }
+    invia_email("Errore Chiave", error_message, morpheus['user']['email'])
+
+except requests.RequestException as re:
+    exit_code = 1
+    error_message = f"Errore HTTP: {str(re)}"
+    result = {
+        "status": "failed",
+        "message": error_message,
+    }
+    invia_email("Errore HTTP", error_message, morpheus['user']['email'])
+
+except Exception as e:
+    exit_code = 1
+    error_message = f"Errore durante l'esecuzione: {str(e)}"
+    result = {
+        "status": "failed",
+        "message": error_message,
+    }
+    invia_email("Errore Generico", error_message, morpheus['user']['email'])
+
+# Imposta il risultato finale in formato JSON
+final_output = json.dumps(result)
+
+# Stampa il risultato in formato JSON
+print(final_output, flush=True)
+
+# Imposta il codice di uscita per far fallire o riuscire il task
+sys.exit(exit_code)
+
+EOFSCRIBE
+  dateCreated = "2024-10-04T11:33:39.000Z"
+  lastUpdated = "2024-10-04T11:53:32.000Z"
+}
