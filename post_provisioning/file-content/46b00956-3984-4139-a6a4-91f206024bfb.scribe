@@ -1,0 +1,189 @@
+resource "file-content" "46b00956-3984-4139-a6a4-91f206024bfb" {
+  uuid = "46b00956-3984-4139-a6a4-91f206024bfb"
+  content = <<EOFSCRIBE
+import json
+import sys
+import mysql.connector
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from morpheuscypher import Cypher
+
+# Funzione per inviare un'email in caso di errore
+def invia_email(subject, body, recipient):
+    smtp_server = "sandbox.smtp.mailtrap.io"
+    smtp_port = 587
+    smtp_user = "31384e4baf21ce"
+    smtp_password = "2e8c46b3f80509"
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())
+        print(f"Email inviata con successo a {recipient}")
+    except smtplib.SMTPException as email_error:
+        print(f"Errore durante l'invio dell'email: {email_error}", flush=True)
+
+# Funzione per stampare i risultati in formato JSON
+def print_result(status, message, data=None):
+    result = {
+        "status": status,
+        "message": message
+    }
+    if data:
+        result["data"] = data
+    print(json.dumps(result))
+
+# Variabile per tenere traccia dello stato del task
+exit_code = 0  # Impostato su 0 per il successo
+
+try:
+    # Verifica se 'morpheus['results']' esiste e contiene il task 'pfsense-creazione-reverse-proxy'
+    if 'results' not in morpheus or not morpheus['results']:
+        raise KeyError("'morpheus.results' non esiste o è nullo.")
+    
+    if 'pfsense-creazione-reverse-proxy' not in morpheus['results'] or morpheus['results']['pfsense-creazione-reverse-proxy'] is None:
+        raise KeyError("'pfsense-creazione-reverse-proxy' non è presente nei risultati o è nullo.")
+    
+    # Recupera il risultato del task
+    pfsense_result = morpheus['results']['pfsense-creazione-reverse-proxy']
+    print(f"Contenuto di pfsense_result: {json.dumps(pfsense_result, indent=2)}")
+
+    # Verifica se il task precedente è stato completato con successo
+    if 'status' not in pfsense_result or pfsense_result['status'] != 'success':
+        message = pfsense_result.get('message', 'Messaggio non disponibile')
+        raise ValueError(f"'pfsense-creazione-reverse-proxy' fallito. Messaggio: {message}")
+    
+    # Accedi ai dati nel campo 'data'
+    data = pfsense_result.get('data', {})
+    pfsense_be_id = data.get('pfsense_be_id', None)
+    pfsense_fe_0_acl_id = data.get('pfsense_fe_0_acl_id', None)
+    pfsense_fe_0_action_id = data.get('pfsense_fe_0_action_id', None)
+    pfsense_fe_1_acl_id = data.get('pfsense_fe_1_acl_id', None)
+
+    print(f"pfsense_be_id: {pfsense_be_id}")
+    print(f"pfsense_fe_0_acl_id: {pfsense_fe_0_acl_id}")
+    print(f"pfsense_fe_0_action_id: {pfsense_fe_0_action_id}")
+    print(f"pfsense_fe_1_acl_id: {pfsense_fe_1_acl_id}")
+
+    if not pfsense_be_id or not pfsense_fe_0_acl_id or not pfsense_fe_0_action_id or not pfsense_fe_1_acl_id:
+        raise ValueError("Alcuni valori necessari sono nulli o mancanti.")
+
+    vm_id = morpheus['instance'].get('id', None)
+    vm_name = morpheus['instance'].get('name', None)
+
+    if not vm_id or not vm_name:
+        raise ValueError("ID o nome della VM non validi.")
+
+    # Connessione al database e aggiornamento
+    try:
+        db_pw = Cypher(morpheus=morpheus).get('secret/DB-MORPHEUS-PW-USER-ROOT')
+
+        # Connessione al database
+        connection = mysql.connector.connect(
+            host="localhost",
+            port="3306",
+            database="xaas_ts",
+            user="root",
+            password=db_pw,
+            auth_plugin='mysql_native_password'
+        )
+
+        cursor = connection.cursor()
+
+        # Esegui una query per verificare se esiste la riga con l'id di Morpheus
+        query = "SELECT * FROM xaas_instances WHERE id_morpheus = %s"
+        cursor.execute(query, (vm_id,))
+        results = cursor.fetchall()
+
+        if results:
+            columns = [column[0] for column in cursor.description]
+
+            # Aggiorna la colonna 'pfsense_be_id' se esiste
+            if 'pfsense_be_id' in columns:
+                update_query_id = "UPDATE xaas_instances SET pfsense_be_id = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_id, (pfsense_be_id, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'pfsense_be_id' aggiornato con successo.")
+
+            # Aggiorna la colonna 'pfsense_fe_0_acl_id' se esiste
+            if 'pfsense_fe_0_acl_id' in columns:
+                update_query_url = "UPDATE xaas_instances SET pfsense_fe_0_acl_id = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_url, (pfsense_fe_0_acl_id, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'pfsense_fe_0_acl_id' aggiornato con successo.")
+            else:
+                print_result("error", "La colonna 'pfsense_fe_0_acl_id' non esiste nella tabella.")
+
+            # Aggiorna la colonna 'pfsense_fe_0_action_id' se esiste
+            if 'pfsense_fe_0_action_id' in columns:
+                update_query_url = "UPDATE xaas_instances SET pfsense_fe_0_action_id = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_url, (pfsense_fe_0_action_id, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'pfsense_fe_0_action_id' aggiornato con successo.")
+            else:
+                print_result("error", "La colonna 'pfsense_fe_0_action_id' non esiste nella tabella.")
+            
+            # Aggiorna la colonna 'pfsense_fe_1_acl_id' se esiste
+            if 'pfsense_fe_1_acl_id' in columns:
+                update_query_url = "UPDATE xaas_instances SET pfsense_fe_1_acl_id = %s WHERE id_morpheus = %s"
+                cursor.execute(update_query_url, (pfsense_fe_1_acl_id, vm_id))
+                connection.commit()
+                print_result("success", "Valore della colonna 'pfsense_fe_1_acl_id' aggiornato con successo.")
+            else:
+                print_result("error", "La colonna 'pfsense_fe_1_acl_id' non esiste nella tabella.")
+                
+        else:
+            # Creazione di un nuovo record
+            insert_query = """
+            INSERT INTO xaas_instances (id_morpheus, host_name, pfsense_be_id, pfsense_fe_0_acl_id, pfsense_fe_0_action_id, pfsense_fe_1_acl_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(insert_query, (vm_id, vm_name, pfsense_be_id, pfsense_fe_0_acl_id, pfsense_fe_0_action_id, pfsense_fe_1_acl_id))
+            connection.commit()
+            print_result("success", "Nuovo record creato con successo.")
+
+    except mysql.connector.Error as err:
+        raise
+
+    finally:
+        # Chiudi il cursore e la connessione
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+except ValueError as ve:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", str(ve))
+    invia_email("Errore Task", str(ve), morpheus['user']['email'])
+
+except KeyError as ke:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore chiave non trovata: {ke}")
+    invia_email("Errore Chiave", f"Errore chiave non trovata: {ke}", morpheus['user']['email'])
+
+except mysql.connector.Error as db_err:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore MySQL: {db_err}")
+    invia_email("Errore MySQL", f"Errore MySQL: {db_err}", morpheus['user']['email'])
+
+except Exception as e:
+    exit_code = 1  # Imposta il codice di uscita su 1 per indicare un fallimento
+    print_result("error", f"Errore generico: {str(e)}")
+    invia_email("Errore Generico", str(e), morpheus['user']['email'])
+
+# Imposta il codice di uscita per far fallire o riuscire il task
+sys.exit(exit_code)
+
+EOFSCRIBE
+  dateCreated = "2024-10-03T15:19:24.000Z"
+  lastUpdated = "2024-10-04T10:51:56.000Z"
+}
